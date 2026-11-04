@@ -4,7 +4,7 @@
   var P = window.Progression;
   var KEY = 'topset.v1';
   var DRAFT_KEY = 'topset.draft.v1';
-  var APP_VERSION = '1.2.0';
+  var APP_VERSION = '1.3.0';
 
   // ---------- small utils ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -36,7 +36,7 @@
     for (var k in P.DEFAULTS) s[k] = P.DEFAULTS[k];
     s.barWeight = 45;
     if (settings) for (var j in settings) s[j] = settings[j];
-    return { version: 1, settings: s, exercises: [], workouts: [], sessions: [], example: false, lastExport: null };
+    return { version: 1, settings: s, exercises: [], workouts: [], sessions: [], sleep: {}, example: false, lastExport: null };
   }
   function normalize(d) {
     var base = emptyDB();
@@ -48,8 +48,24 @@
       exercises: Array.isArray(d.exercises) ? d.exercises : [],
       workouts: Array.isArray(d.workouts) ? d.workouts.map(migrateWorkout) : [],
       sessions: Array.isArray(d.sessions) ? d.sessions : [],
+      sleep: migrateSleep(d),
       example: !!d.example, lastExport: d.lastExport || null
     };
+  }
+  // Sleep is one entry per day. v1.2 kept it on sessions; move any of those into the daily log.
+  function migrateSleep(d) {
+    var out = {};
+    if (d.sleep && typeof d.sleep === 'object' && !Array.isArray(d.sleep)) {
+      for (var k in d.sleep) { var h = parseSleep(d.sleep[k]); if (/^\d{4}-\d{2}-\d{2}$/.test(k) && h !== null) out[k] = h; }
+    }
+    (Array.isArray(d.sessions) ? d.sessions : []).forEach(function (sess) {
+      if (sess && sess.sleep !== undefined) {
+        var h = parseSleep(sess.sleep);
+        if (h !== null && out[sess.date] === undefined) out[sess.date] = h;
+        delete sess.sleep;
+      }
+    });
+    return out;
   }
   // A workout is a list of groups ("slots"), e.g. "Chest". Each group lists the exercises you can pick from that day.
   function migrateWorkout(w) {
@@ -150,10 +166,11 @@
             { kind: 'backoff', weight: bo, reps: 10 }
           ] });
         });
-        var sleepScript = [7.5, 6, 8, 7, 5.5, 7.5, 8.5, 6.5, 7, 6, 8];
-        if (entries.length) d.sessions.push({ id: uid(), date: date, createdAt: t++, workoutId: p[1].id, note: '', sleep: sleepScript[t % sleepScript.length], entries: entries });
+        if (entries.length) d.sessions.push({ id: uid(), date: date, createdAt: t++, workoutId: p[1].id, note: '', entries: entries });
       });
     }
+    var sleepScript = [7.5, 6, 8, 7, 5.5, 7.5, 8.5, 6.5, 7, 6, 8, 7, 6.5, 9];
+    for (var n = 1; n <= sleepScript.length; n++) d.sleep[addDays(today, -n)] = sleepScript[n - 1];
     return d;
   }
 
@@ -179,7 +196,8 @@
   function usedIn(exId) {
     return db.workouts.filter(function (w) { return w.slots.some(function (sl) { return sl.options.some(function (o) { return o.exerciseId === exId; }); }); });
   }
-  function sleepOf(sessionId) { var s = sessById(sessionId); return s ? parseSleep(s.sleep) : null; }
+  function sleepFor(date) { var h = db.sleep ? db.sleep[date] : undefined; return h === undefined ? null : parseSleep(h); }
+  function sleepOf(sessionId) { var s = sessById(sessionId); return s ? sleepFor(s.date) : null; }
   function slotById(w, id) { if (!w) return null; for (var i = 0; i < w.slots.length; i++) if (w.slots[i].id === id) return w.slots[i]; return null; }
   // Which option to pre-select for a group: the one you logged last time in this group, else the first.
   function defaultPick(w, sl) {
@@ -344,21 +362,24 @@
     var n = Number(String(v).replace(',', '.').trim());
     return isFinite(n) && n >= 0 && n <= 24 ? Math.round(n * 100) / 100 : null;
   }
-  // One point per day for the last 7 days (today last). Uses the latest logged session that day.
+  var sleepSel = null; // the day selected in the sleep card
+  function workoutsOn(date) {
+    return db.sessions.filter(function (x) { return x.date === date; }).map(function (x) { var w = wById(x.workoutId); return w ? w.name : ''; }).filter(Boolean);
+  }
   function sleepWeek() {
     var today = todayISO(), days = [];
-    for (var i = 6; i >= 0; i--) days.push({ date: addDays(today, -i), hours: null, workout: '' });
-    var byDate = {};
-    days.forEach(function (d) { byDate[d.date] = d; });
-    db.sessions.slice().sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); }).forEach(function (s) {
-      var d = byDate[s.date]; var h = parseSleep(s.sleep);
-      if (d && h !== null) { d.hours = h; var w = wById(s.workoutId); d.workout = w ? w.name : ''; }
-    });
+    for (var i = 6; i >= 0; i--) { var dt = addDays(today, -i); days.push({ date: dt, hours: sleepFor(dt), workouts: workoutsOn(dt) }); }
     return days;
   }
-  function sleepText(d) { return fmtDate(d.date, true) + ' · ' + fmtW(d.hours) + ' h sleep' + (d.workout ? ' before ' + d.workout : ''); }
+  function sleepText(d) {
+    return fmtDate(d.date, true) + ' · ' + (d.hours !== null ? fmtW(d.hours) + ' h sleep' : 'no sleep logged') +
+      (d.workouts.length ? ' · before ' + d.workouts.join(', ') : '');
+  }
   function sleepCard() {
     var days = sleepWeek();
+    var today = todayISO();
+    if (!sleepSel || !days.some(function (d) { return d.date === sleepSel; })) sleepSel = today;
+    var sel = days.filter(function (d) { return d.date === sleepSel; })[0];
     var pts = days.filter(function (d) { return d.hours !== null; });
     var avg = pts.length ? pts.reduce(function (a, d) { return a + d.hours; }, 0) / pts.length : null;
     var W = 340, H = 150, L = 30, R = 10, T = 18, B = 24;
@@ -368,31 +389,32 @@
     function X(i) { return L + colW * (i + 0.5); }
     function Y(v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); }
     var g = [];
+    days.forEach(function (d, i) {
+      if (d.date === sleepSel) g.push('<rect class="sel-col" x="' + (X(i) - colW / 2 + 2).toFixed(1) + '" y="2" width="' + (colW - 4).toFixed(1) + '" height="' + (H - 4) + '" rx="8"/>');
+    });
     for (var v = lo; v <= hi; v += 2) {
       g.push('<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v).toFixed(1) + '" y2="' + Y(v).toFixed(1) + '"/>');
       g.push('<text x="' + (L - 6) + '" y="' + (Y(v) + 4).toFixed(1) + '" text-anchor="end">' + v + '</text>');
     }
-    var today = todayISO();
-    days.forEach(function (d, i) {
-      var lab = parseISO(d.date).toLocaleDateString(undefined, { weekday: 'short' });
-      g.push('<text x="' + X(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle"' + (d.date === today ? ' class="today"' : '') + '>' + esc(lab) + '</text>');
-    });
-    var latest = pts.length ? pts[pts.length - 1] : null;
-    var marks = days.map(function (d, i) {
-      if (d.hours === null) return '';
-      var cx = X(i).toFixed(1), cy = Y(d.hours).toFixed(1), label = sleepText(d);
-      return '<g class="sleep-pt' + (d === latest ? ' on' : '') + '" tabindex="0" role="button" data-act="sleepPt" data-label="' + esc(label) + '" aria-label="' + esc(label) + '">' +
-        '<rect x="' + (X(i) - colW / 2).toFixed(1) + '" y="0" width="' + colW.toFixed(1) + '" height="' + (H - B) + '" fill="transparent"/>' +
-        '<circle cx="' + cx + '" cy="' + cy + '" r="5.5"/>' +
-        '<text class="val" x="' + cx + '" y="' + (Y(d.hours) - 10).toFixed(1) + '" text-anchor="middle">' + fmtW(d.hours) + '</text></g>';
+    var cols = days.map(function (d, i) {
+      var lab = d.date === today ? 'Today' : parseISO(d.date).toLocaleDateString(undefined, { weekday: 'short' });
+      var label = sleepText(d);
+      var mark = d.hours === null ? '' :
+        '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(d.hours).toFixed(1) + '" r="' + (d.date === sleepSel ? 7 : 5.5) + '"/>' +
+        '<text class="val" x="' + X(i).toFixed(1) + '" y="' + (Y(d.hours) - 11).toFixed(1) + '" text-anchor="middle">' + fmtW(d.hours) + '</text>';
+      return '<g class="sleep-pt' + (d.date === sleepSel ? ' on' : '') + '" tabindex="0" role="button" data-act="sleepDay" data-date="' + d.date + '" aria-pressed="' + (d.date === sleepSel) + '" aria-label="' + esc(label) + '">' +
+        '<rect x="' + (X(i) - colW / 2).toFixed(1) + '" y="0" width="' + colW.toFixed(1) + '" height="' + H + '" fill="transparent"/>' + mark +
+        '<text class="day' + (d.date === sleepSel ? ' today' : '') + '" x="' + X(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">' + esc(lab) + '</text></g>';
     }).join('');
     var head = '<div class="row between"><span class="label">Sleep · last 7 days</span>' +
-      (avg !== null ? '<span class="small"><span class="muted">Avg</span> <strong class="num">' + fmtW(Math.round(avg * 10) / 10) + ' h</strong></span>' : '') + '</div>';
-    var svg = '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Hours of sleep before each workout, last 7 days">' + g.join('') + marks + '</svg></div>';
-    var foot = latest
-      ? '<p class="small muted" id="sleepReadout" aria-live="polite">' + esc(sleepText(latest)) + '</p>'
-      : '<p class="small muted">Enter how long you slept when you log a workout, and it shows up here.</p>';
-    return '<div class="card sleep-card">' + head + svg + foot + '</div>';
+      (avg !== null ? '<span class="small"><span class="muted">Avg</span> <strong class="num">' + fmtW(Math.round(avg * 10) / 10) + ' h</strong><span class="muted"> · ' + pts.length + ' night' + (pts.length === 1 ? '' : 's') + '</span></span>' : '') + '</div>';
+    var svg = '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Hours of sleep each night, last 7 days">' + g.join('') + cols + '</svg></div>';
+    var dayName = sel.date === today ? 'last night' : 'the night before ' + fmtDate(sel.date, true);
+    var form = '<div class="field"><label class="label" for="sleepHours">Hours slept ' + esc(dayName) + '</label>' +
+      '<div class="row"><div class="unit-input grow"><input class="input num" id="sleepHours" inputmode="decimal" enterkeyhint="done" placeholder="e.g. 7.5" value="' + (sel.hours !== null ? fmtW(sel.hours) : '') + '"><span class="muted">hrs</span></div>' +
+      '<button class="btn primary" data-act="saveSleep">' + (sel.hours !== null ? 'Update' : 'Save') + '</button></div>' +
+      '<span class="small muted">' + (sel.workouts.length ? 'Before ' + esc(sel.workouts.join(', ')) + '. ' : '') + 'Tap a day on the graph to log or change it.</span></div>';
+    return '<div class="card sleep-card">' + head + svg + form + '</div>';
   }
 
   // ---------- views ----------
@@ -439,7 +461,7 @@
   function newDraft(w) {
     var n = backoffCount();
     return {
-      sessionId: null, workoutId: w.id, date: todayISO(), note: '', sleep: '',
+      sessionId: null, workoutId: w.id, date: todayISO(), note: '', sleep: '', sleepTouched: false,
       entries: w.slots.map(function (sl) {
         var x = defaultPick(w, sl); var ex = x && exById(x); if (!ex) return null;
         return { slotId: sl.id, exerciseId: ex.id, sets: defaultSets(ex, n) };
@@ -477,7 +499,7 @@
     var u = unit();
     var parts = [];
     parts.push('<div class="card"><div class="grid2"><div class="field"><label class="label" for="sdate">Date</label><input class="input num" id="sdate" type="date" value="' + esc(d.date) + '" data-bind="date"></div>' +
-      '<div class="field"><label class="label" for="ssleep">Sleep last night</label><div class="unit-input"><input class="input num" id="ssleep" inputmode="decimal" placeholder="e.g. 7.5" value="' + esc(d.sleep === undefined || d.sleep === null ? '' : d.sleep) + '" data-bind="sleep"><span class="muted">hrs</span></div></div></div>' +
+      '<div class="field"><label class="label" for="ssleep">Sleep last night</label><div class="unit-input"><input class="input num" id="ssleep" inputmode="decimal" placeholder="e.g. 7.5" value="' + esc(d.sleepTouched ? d.sleep : (sleepFor(d.date) !== null ? fmtW(sleepFor(d.date)) : '')) + '" data-bind="sleep"><span class="muted">hrs</span></div></div></div>' +
       (w && w.description ? '<p class="small muted">' + esc(w.description) + '</p>' : '') + '</div>');
     if (editing) parts.push('<div class="banner"><p>Editing a logged session. Changes update each exercise’s history and suggestions.</p></div>');
     if (!d.entries.length) {
@@ -714,6 +736,13 @@
     }).filter(function (e) { return e.sets.length; });
   }
 
+  function applyDraftSleep(d) {
+    if (!d.sleepTouched) return;
+    var h = parseSleep(d.sleep);
+    if (h !== null) db.sleep[d.date] = h;
+    else if (String(d.sleep || '').trim() === '') delete db.sleep[d.date];
+  }
+
   function saveSession() {
     var d = curDraft();
     var entries = cleanEntries(d);
@@ -721,13 +750,15 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) d.date = todayISO();
     if (view.edit) {
       var s = sessById(d.sessionId);
-      if (s) { s.date = d.date; s.note = d.note; s.sleep = parseSleep(d.sleep); s.entries = entries; }
+      if (s) { s.date = d.date; s.note = d.note; s.entries = entries; }
+      applyDraftSleep(d);
       persist(); editDraft = null;
       toast('Changes saved.');
       back();
       return;
     }
-    db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, sleep: parseSleep(d.sleep), entries: entries });
+    db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, entries: entries });
+    applyDraftSleep(d);
     persist(); clearDraft();
     var notes = entries.map(function (e) {
       var ex = exById(e.exerciseId); var s = suggestionFor(ex);
@@ -823,7 +854,7 @@
     editSession: function (b) {
       var s = sessById(b.dataset.id); if (!s) return;
       editDraft = {
-        sessionId: s.id, workoutId: s.workoutId, date: s.date, note: s.note || '', sleep: s.sleep === undefined || s.sleep === null ? '' : s.sleep,
+        sessionId: s.id, workoutId: s.workoutId, date: s.date, note: s.note || '', sleep: '', sleepTouched: false,
         entries: s.entries.map(function (e) { return { slotId: e.slotId || null, exerciseId: e.exerciseId, sets: e.sets.map(function (x) { return { kind: x.kind || 'work', weight: x.weight, reps: x.reps }; }) }; })
       };
       go({ name: 'session', edit: s.id });
@@ -856,10 +887,18 @@
       if (!sl.options.some(function (o) { return o.exerciseId === ex.id; })) sl.options.push({ exerciseId: ex.id, note: '' });
       persist(); render(); toast(ex.name + ' added to your library and this group.');
     },
-    sleepPt: function (b) {
-      document.querySelectorAll('.sleep-pt.on').forEach(function (n) { n.classList.remove('on'); });
-      b.classList.add('on');
-      var r = document.getElementById('sleepReadout'); if (r) r.textContent = b.getAttribute('data-label');
+    sleepDay: function (b) { sleepSel = b.getAttribute('data-date'); render(); var el = document.getElementById('sleepHours'); if (el) el.focus({ preventScroll: true }); },
+    saveSleep: function () {
+      var el = document.getElementById('sleepHours'); if (!el || !sleepSel) return;
+      var raw = el.value.trim();
+      if (raw === '') {
+        if (db.sleep[sleepSel] !== undefined) { delete db.sleep[sleepSel]; persist(); render(); toast('Sleep entry removed.'); }
+        else toast('Enter how many hours you slept, like 7.5.');
+        return;
+      }
+      var h = parseSleep(raw);
+      if (h === null) { toast('Enter hours between 0 and 24, like 7.5.'); return; }
+      db.sleep[sleepSel] = h; persist(); render(); toast('Sleep saved.');
     },
     pickOpt: function (b) {
       var d = curDraft(); var en = d && d.entries[+b.dataset.e]; var ex = exById(b.dataset.x);
@@ -930,7 +969,7 @@
     },
     date: function (t) { curDraft().date = t.value; saveDraftSoon(); },
     snote: function (t) { curDraft().note = t.value; saveDraftSoon(); },
-    sleep: function (t) { curDraft().sleep = t.value.replace(',', '.').trim(); saveDraftSoon(); },
+    sleep: function (t) { var d = curDraft(); d.sleep = t.value.replace(',', '.').trim(); d.sleepTouched = true; saveDraftSoon(); },
     itemNote: function (t) {
       var w = wById(t.dataset.w); if (!w) return;
       var sl = slotById(w, t.dataset.sl); if (!sl) return;
@@ -991,9 +1030,10 @@
     if (t.dataset.bind === 'exField' && (t.dataset.k === 'equipment' || t.dataset.k === 'increment' || t.dataset.k === 'startWeight')) { persist(); render(); }
   });
   document.addEventListener('keydown', function (e) {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('sleep-pt')) { e.preventDefault(); ACTIONS.sleepPt(e.target); return; }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('sleep-pt')) { e.preventDefault(); ACTIONS.sleepDay(e.target); return; }
     if (e.key !== 'Enter' || !e.target.id) return;
     if (e.target.id === 'newex') { e.preventDefault(); ACTIONS.addEx(); }
+    if (e.target.id === 'sleepHours') { e.preventDefault(); e.target.blur(); ACTIONS.saveSleep(); }
     var m = /^snew-(\d+)$/.exec(e.target.id);
     if (m) { e.preventDefault(); ACTIONS.optCreate({ dataset: { i: m[1] } }); }
   });

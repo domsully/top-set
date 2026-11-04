@@ -10,7 +10,7 @@ Each exercise lives once in your **exercise library** and keeps one history. A w
 
 Each exercise shows the weight to use, your **most recent reps** at that weight (the number to match or beat) and your **best reps** at that weight. The first time at a new, heavier weight, the target is 6 reps (changeable in Settings).
 
-**Sleep:** enter how long you slept when you start a workout. The Train tab shows a point graph of your sleep over the last 7 days, and each exercise's history lists the sleep before that session.
+**Sleep:** a daily log, separate from workouts, so rest days count too. Log it on the Train tab (tap a day on the 7-day graph to fill in or fix that night). The sleep box on a workout edits the same day's entry, and each exercise's history lists the sleep before that session.
 
 Reps can be whole or half (5.5). The first set is the top set and drives every suggestion; the sets after it are back-offs.
 
