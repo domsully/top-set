@@ -8,6 +8,10 @@ No accounts, no server, no build step. Plain HTML, CSS and JavaScript.
 
 Each exercise lives once in your **exercise library** and keeps one history. A workout is a list of numbered **groups** (Calf, Chest, Hinge…), and each group holds the exercises you can choose from that day. You tap the one you're doing, and next time the app pre-selects whichever you did last. Log DB overhead extensions on pull day and the suggestion on push day already reflects it.
 
+Each exercise shows the weight to use, your **most recent reps** at that weight (the number to match or beat) and your **best reps** at that weight. The first time at a new, heavier weight, the target is 6 reps (changeable in Settings).
+
+**Sleep:** enter how long you slept when you start a workout. The Train tab shows a point graph of your sleep over the last 7 days, and each exercise's history lists the sleep before that session.
+
 Reps can be whole or half (5.5). The first set is the top set and drives every suggestion; the sets after it are back-offs.
 
 For each exercise:
@@ -18,7 +22,8 @@ For each exercise:
 | Weight jump | 5 lb | Can be overridden per exercise (e.g. 2.5 for dumbbells). |
 | Grace period | 3 sessions | After a jump the weight stays put for 3 sessions, however they go. |
 | Rep floor | 4 reps | After those 3 sessions, if the average top-set reps is below 4, drop back to the previous weight. |
-| Rolling window | 4 sessions | The strength trend and the "aim for X reps" target use the average estimated max (Epley) over the last 4 sessions. |
+| Rolling window | 4 sessions | The strength trend on each exercise's chart uses the average estimated max (Epley) over the last 4 sessions. |
+| Reps at a new weight | 6 | Target the first time at a heavier weight. After that, the target is your most recent reps there. |
 | Back-off sets | 2 × 70% | Pre-filled after the top set, rounded to the jump. |
 
 All of these can be changed in **Settings**. The logic lives in `js/progression.js` with tests in `tests/`.

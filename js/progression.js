@@ -8,7 +8,10 @@
  *     sessions no matter how they go.
  *   - After that, if the average top-set reps over the last `graceSessions`
  *     sessions at that weight is below `floorReps` (default 4), drop back.
- *   - The rep target uses a rolling average of estimated strength over the last
+ *   - Rep target: at a weight you've already lifted, match your most recent reps
+ *     there (best reps at that weight are reported too). At a new weight, aim for
+ *     `startReps` (default 6).
+ *   - The strength trend uses a rolling average of estimated max over the last
  *     `windowSessions` (default 4) sessions, so one bad day barely moves it.
  *   - Back-off sets: `backoffSets` sets at `backoffPct` (default 70%) of the
  *     top weight, rounded to the increment.
@@ -24,7 +27,8 @@
     graceSessions: 3,
     windowSessions: 4,
     backoffPct: 0.7,
-    backoffSets: 2
+    backoffSets: 2,
+    startReps: 6
   };
 
   function withDefaults(settings) {
@@ -129,7 +133,8 @@
     exercise = exercise || {};
     var inc = Number(exercise.increment) > 0 ? Number(exercise.increment) : Number(s.increment);
     var res = {
-      status: 'new', weight: null, reason: '', targetReps: null, trend: null,
+      status: 'new', weight: null, reason: '', targetReps: null, targetIsStart: false,
+      lastReps: null, bestReps: null, trend: null,
       runLength: 0, runAvg: null, lastTop: null, dropTo: null, backoff: null, increment: inc
     };
 
@@ -138,6 +143,7 @@
       res.weight = start > 0 ? start : null;
       res.reason = res.weight ? 'Starting weight. Log a session to build a trend.' : 'No history yet. Set a starting weight or just log your first session.';
       res.backoff = res.weight ? { weight: roundTo(res.weight * s.backoffPct, inc), sets: s.backoffSets } : null;
+      if (res.weight) { res.targetReps = Number(s.startReps); res.targetIsStart = true; }
       return res;
     }
 
@@ -191,8 +197,19 @@
     // Rolling trend over the last N sessions (any weight).
     var series = trendSeries(hist, Math.max(1, Number(s.windowSessions)));
     res.trend = series[series.length - 1];
-    var r = repsAt(res.trend, res.weight);
-    if (r !== null) res.targetReps = Math.max(1, Math.min(Number(s.moveUpReps), Math.round(r)));
+
+    // Reps you've done at the suggested weight: most recent and best.
+    var atW = hist.filter(function (h) { return h.top.weight === res.weight; });
+    if (atW.length) {
+      res.lastReps = atW[atW.length - 1].top.reps;
+      res.bestReps = Math.max.apply(null, atW.map(function (h) { return h.top.reps; }));
+    }
+    if (res.status === 'up' || res.lastReps === null) {
+      res.targetReps = Number(s.startReps);
+      res.targetIsStart = true;
+    } else {
+      res.targetReps = res.lastReps;
+    }
 
     res.backoff = { weight: roundTo(res.weight * s.backoffPct, inc), sets: Number(s.backoffSets) };
     return res;

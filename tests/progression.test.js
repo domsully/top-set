@@ -89,7 +89,7 @@ test('rolling trend uses last 4 sessions and gives a rep target', () => {
   assert.ok(Math.abs(r.trend - lastFour.reduce((a, b) => a + b) / 4) < 1e-9);
   assert.equal(r.status, 'grace');
   assert.equal(r.weight, 190);
-  assert.equal(r.targetReps, 6); // ~228 est. max → about 6 reps at 190
+  assert.equal(r.targetReps, 4); // most recent reps at 190
 });
 
 test('per-exercise increment override', () => {
@@ -112,4 +112,32 @@ test('half reps are kept and 8.5 does not move up', () => {
 
 test('first set marked top wins even if a later set is heavier', () => {
   assert.equal(P.topSet([{ kind: 'top', weight: 180, reps: 4 }, { kind: 'backoff', weight: 185, reps: 2 }]).weight, 180);
+});
+
+test('holding shows most recent reps and best reps at that weight', () => {
+  let r = sug(mk('bench', [['2026-10-01', 185, 9], ['2026-10-08', 190, 6], ['2026-10-15', 190, 7]]));
+  assert.equal(r.targetReps, 7); assert.equal(r.lastReps, 7); assert.equal(r.bestReps, 7);
+  r = sug(mk('bench', [['2026-10-01', 185, 9], ['2026-10-08', 190, 6], ['2026-10-15', 190, 8], ['2026-10-22', 190, 5]]));
+  assert.equal(r.status, 'hold'); assert.equal(r.targetReps, 5); assert.equal(r.bestReps, 8);
+  assert.equal(r.targetIsStart, false);
+});
+
+test('a new weight always starts at 6 reps', () => {
+  const r = sug(mk('bench', [['2026-10-01', 185, 7], ['2026-10-08', 185, 9]]));
+  assert.equal(r.status, 'up'); assert.equal(r.weight, 190);
+  assert.equal(r.targetReps, 6); assert.equal(r.targetIsStart, true);
+  assert.equal(r.lastReps, null);
+  assert.equal(sug({ sessions: [] }, 'bench', { startWeight: 135 }).targetReps, 6);
+});
+
+test('dropping back uses your reps from that weight', () => {
+  const d = mk('bench', [['2026-09-24', 185, 8], ['2026-10-01', 185, 9], ['2026-10-08', 190, 3], ['2026-10-15', 190, 4], ['2026-10-22', 190, 3]]);
+  const r = sug(d);
+  assert.equal(r.status, 'drop'); assert.equal(r.weight, 185);
+  assert.equal(r.lastReps, 9); assert.equal(r.bestReps, 9); assert.equal(r.targetReps, 9);
+});
+
+test('start reps setting is configurable', () => {
+  const h = P.historyFor(mk('bench', [['2026-10-01', 185, 9]]), 'bench');
+  assert.equal(P.suggest(h, { startReps: 5 }).targetReps, 5);
 });

@@ -4,7 +4,7 @@
   var P = window.Progression;
   var KEY = 'topset.v1';
   var DRAFT_KEY = 'topset.draft.v1';
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.2.0';
 
   // ---------- small utils ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -150,7 +150,8 @@
             { kind: 'backoff', weight: bo, reps: 10 }
           ] });
         });
-        if (entries.length) d.sessions.push({ id: uid(), date: date, createdAt: t++, workoutId: p[1].id, note: '', entries: entries });
+        var sleepScript = [7.5, 6, 8, 7, 5.5, 7.5, 8.5, 6.5, 7, 6, 8];
+        if (entries.length) d.sessions.push({ id: uid(), date: date, createdAt: t++, workoutId: p[1].id, note: '', sleep: sleepScript[t % sleepScript.length], entries: entries });
       });
     }
     return d;
@@ -178,6 +179,7 @@
   function usedIn(exId) {
     return db.workouts.filter(function (w) { return w.slots.some(function (sl) { return sl.options.some(function (o) { return o.exerciseId === exId; }); }); });
   }
+  function sleepOf(sessionId) { var s = sessById(sessionId); return s ? parseSleep(s.sleep) : null; }
   function slotById(w, id) { if (!w) return null; for (var i = 0; i < w.slots.length; i++) if (w.slots[i].id === id) return w.slots[i]; return null; }
   // Which option to pre-select for a group: the one you logged last time in this group, else the first.
   function defaultPick(w, sl) {
@@ -259,6 +261,13 @@
     return '<div class="plates">' + svg + '<span class="small muted num">per side ' + esc(label) + '</span></div>';
   }
 
+  // "Last 7 · Best 8" at the suggested weight, or "Start at 6" for a new weight.
+  function repsLine(s) {
+    if (s.weight === null || s.weight === undefined || !s.targetReps) return '';
+    if (s.targetIsStart) return 'New weight · start at ' + s.targetReps + (s.bestReps ? ' · best here ' + fmtW(s.bestReps) : '');
+    return 'Last ' + fmtW(s.lastReps) + ' · Best ' + fmtW(s.bestReps);
+  }
+
   function suggestionBlock(ex, s) {
     var u = unit();
     if (s.weight === null || s.weight === undefined) {
@@ -266,8 +275,8 @@
     }
     var target = s.targetReps ? s.targetReps : null;
     var big = '<div class="big num">' + fmtW(s.weight) + '<span class="unit">' + u + '</span>' +
-      (target ? '<span class="x">×</span>' + target : '') + '</div>';
-    var sub = target ? '<div class="small muted">aim for ' + target + '+ reps · move up at ' + esc(db.settings.moveUpReps) + '</div>' : '';
+      (target ? '<span class="x">×</span>' + fmtW(target) : '') + '</div>';
+    var sub = target ? '<div class="small"><span class="reps-meta">' + esc(repsLine(s)) + '</span><span class="muted"> · move up at ' + esc(db.settings.moveUpReps) + '</span></div>' : '';
     var bo = s.backoff && s.backoff.sets > 0 ? '<span class="chip">Back-off ' + s.backoff.sets + ' × ' + fmtW(s.backoff.weight) + '</span>' : '';
     return '<div class="suggest">' + big + (ex.equipment === 'barbell' ? plateSVG(Number(s.weight)) : ex.equipment === 'smith' ? plateSVG(Number(s.weight), 0) : '') + '</div>' + sub +
       '<p class="small muted">' + esc(s.reason) + '</p>' + (bo ? '<div class="chips">' + bo + '</div>' : '');
@@ -329,6 +338,63 @@
       (hist.length > MAX ? '<p class="small muted">Showing the last ' + MAX + ' sessions.</p>' : '');
   }
 
+  // ---------- sleep ----------
+  function parseSleep(v) {
+    if (v === undefined || v === null || String(v).trim() === '') return null;
+    var n = Number(String(v).replace(',', '.').trim());
+    return isFinite(n) && n >= 0 && n <= 24 ? Math.round(n * 100) / 100 : null;
+  }
+  // One point per day for the last 7 days (today last). Uses the latest logged session that day.
+  function sleepWeek() {
+    var today = todayISO(), days = [];
+    for (var i = 6; i >= 0; i--) days.push({ date: addDays(today, -i), hours: null, workout: '' });
+    var byDate = {};
+    days.forEach(function (d) { byDate[d.date] = d; });
+    db.sessions.slice().sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); }).forEach(function (s) {
+      var d = byDate[s.date]; var h = parseSleep(s.sleep);
+      if (d && h !== null) { d.hours = h; var w = wById(s.workoutId); d.workout = w ? w.name : ''; }
+    });
+    return days;
+  }
+  function sleepText(d) { return fmtDate(d.date, true) + ' · ' + fmtW(d.hours) + ' h sleep' + (d.workout ? ' before ' + d.workout : ''); }
+  function sleepCard() {
+    var days = sleepWeek();
+    var pts = days.filter(function (d) { return d.hours !== null; });
+    var avg = pts.length ? pts.reduce(function (a, d) { return a + d.hours; }, 0) / pts.length : null;
+    var W = 340, H = 150, L = 30, R = 10, T = 18, B = 24;
+    var lo = 4, hi = 10;
+    pts.forEach(function (d) { lo = Math.min(lo, Math.floor(d.hours / 2) * 2); hi = Math.max(hi, Math.ceil(d.hours / 2) * 2); });
+    var colW = (W - L - R) / 7;
+    function X(i) { return L + colW * (i + 0.5); }
+    function Y(v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); }
+    var g = [];
+    for (var v = lo; v <= hi; v += 2) {
+      g.push('<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v).toFixed(1) + '" y2="' + Y(v).toFixed(1) + '"/>');
+      g.push('<text x="' + (L - 6) + '" y="' + (Y(v) + 4).toFixed(1) + '" text-anchor="end">' + v + '</text>');
+    }
+    var today = todayISO();
+    days.forEach(function (d, i) {
+      var lab = parseISO(d.date).toLocaleDateString(undefined, { weekday: 'short' });
+      g.push('<text x="' + X(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle"' + (d.date === today ? ' class="today"' : '') + '>' + esc(lab) + '</text>');
+    });
+    var latest = pts.length ? pts[pts.length - 1] : null;
+    var marks = days.map(function (d, i) {
+      if (d.hours === null) return '';
+      var cx = X(i).toFixed(1), cy = Y(d.hours).toFixed(1), label = sleepText(d);
+      return '<g class="sleep-pt' + (d === latest ? ' on' : '') + '" tabindex="0" role="button" data-act="sleepPt" data-label="' + esc(label) + '" aria-label="' + esc(label) + '">' +
+        '<rect x="' + (X(i) - colW / 2).toFixed(1) + '" y="0" width="' + colW.toFixed(1) + '" height="' + (H - B) + '" fill="transparent"/>' +
+        '<circle cx="' + cx + '" cy="' + cy + '" r="5.5"/>' +
+        '<text class="val" x="' + cx + '" y="' + (Y(d.hours) - 10).toFixed(1) + '" text-anchor="middle">' + fmtW(d.hours) + '</text></g>';
+    }).join('');
+    var head = '<div class="row between"><span class="label">Sleep · last 7 days</span>' +
+      (avg !== null ? '<span class="small"><span class="muted">Avg</span> <strong class="num">' + fmtW(Math.round(avg * 10) / 10) + ' h</strong></span>' : '') + '</div>';
+    var svg = '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Hours of sleep before each workout, last 7 days">' + g.join('') + marks + '</svg></div>';
+    var foot = latest
+      ? '<p class="small muted" id="sleepReadout" aria-live="polite">' + esc(sleepText(latest)) + '</p>'
+      : '<p class="small muted">Enter how long you slept when you log a workout, and it shows up here.</p>';
+    return '<div class="card sleep-card">' + head + svg + foot + '</div>';
+  }
+
   // ---------- views ----------
   var VIEWS = {};
 
@@ -343,6 +409,7 @@
         '<div class="btnrow"><button class="btn primary sm" data-act="start" data-id="' + esc(draft.workoutId) + '">Resume</button>' +
         '<button class="btn sm danger" data-act="discardDraft" data-confirm="Tap again to discard">Discard</button></div></div>');
     }
+    parts.push(sleepCard());
     parts.push('<div class="section-head"><span class="label">Workouts</span><button class="btn ghost sm" data-act="newWorkout">+ New workout</button></div>');
     if (!db.workouts.length) {
       parts.push('<div class="card empty"><h3>No workouts yet</h3><p class="muted">Make a workout, then add exercises from your library. Each exercise keeps one history, wherever you log it.</p><button class="btn primary" data-act="newWorkout">Create a workout</button></div>');
@@ -353,8 +420,10 @@
         var pick = defaultPick(w, sl); var ex = pick && exById(pick); if (!ex) return '';
         var s = suggestionFor(ex);
         var more = sl.options.length > 1 ? ' <span class="muted">(+' + (sl.options.length - 1) + ')</span>' : '';
-        return '<div class="row between small"><span class="grow">' + (sl.name ? '<span class="muted">' + esc(sl.name) + ' · </span>' : '') + esc(ex.name) + more + '</span><span class="num" style="font-weight:600;white-space:nowrap">' +
-          (s.weight !== null && s.weight !== undefined ? fmtW(s.weight) + (s.targetReps ? ' × ' + s.targetReps : '') : '–') + '</span>' + statusChip(s) + '</div>';
+        var meta = repsLine(s);
+        return '<div class="wrow"><span class="stack grow" style="gap:0"><span>' + (sl.name ? '<span class="muted">' + esc(sl.name) + ' · </span>' : '') + esc(ex.name) + more + '</span>' +
+          (meta ? '<span class="small muted num">' + esc(meta) + '</span>' : '') + '</span>' +
+          '<span class="num wnum">' + (s.weight !== null && s.weight !== undefined ? fmtW(s.weight) + (s.targetReps ? ' × ' + fmtW(s.targetReps) : '') : '–') + '</span>' + statusChip(s) + '</div>';
       }).join('');
       parts.push('<button class="card tap" data-act="start" data-id="' + esc(w.id) + '">' +
         '<div class="row between"><h2 class="grow">' + esc(w.name || 'Untitled workout') + '</h2><span class="small muted">' + (ld ? 'Last ' + esc(fmtDate(ld)) : 'Not logged yet') + '</span></div>' +
@@ -370,7 +439,7 @@
   function newDraft(w) {
     var n = backoffCount();
     return {
-      sessionId: null, workoutId: w.id, date: todayISO(), note: '',
+      sessionId: null, workoutId: w.id, date: todayISO(), note: '', sleep: '',
       entries: w.slots.map(function (sl) {
         var x = defaultPick(w, sl); var ex = x && exById(x); if (!ex) return null;
         return { slotId: sl.id, exerciseId: ex.id, sets: defaultSets(ex, n) };
@@ -408,7 +477,7 @@
     var u = unit();
     var parts = [];
     parts.push('<div class="card"><div class="grid2"><div class="field"><label class="label" for="sdate">Date</label><input class="input num" id="sdate" type="date" value="' + esc(d.date) + '" data-bind="date"></div>' +
-      '<div class="field"><span class="label">Workout</span><div class="input" style="display:flex;align-items:center;background:transparent;border-color:transparent;padding-left:0">' + esc(w ? w.name : 'Deleted workout') + '</div></div></div>' +
+      '<div class="field"><label class="label" for="ssleep">Sleep last night</label><div class="unit-input"><input class="input num" id="ssleep" inputmode="decimal" placeholder="e.g. 7.5" value="' + esc(d.sleep === undefined || d.sleep === null ? '' : d.sleep) + '" data-bind="sleep"><span class="muted">hrs</span></div></div></div>' +
       (w && w.description ? '<p class="small muted">' + esc(w.description) + '</p>' : '') + '</div>');
     if (editing) parts.push('<div class="banner"><p>Editing a logged session. Changes update each exercise’s history and suggestions.</p></div>');
     if (!d.entries.length) {
@@ -452,7 +521,7 @@
         (opt ? '<div class="field"><label class="label" for="inote-' + ei + '">Note for this workout</label><textarea class="input" id="inote-' + ei + '" rows="2" placeholder="e.g. paused reps, burnout set" data-bind="itemNote" data-w="' + esc(w.id) + '" data-sl="' + esc(sl.id) + '" data-x="' + esc(ex.id) + '">' + esc(opt.note) + '</textarea></div>' : '') +
         '</section>');
     });
-    parts.push('<div class="card"><div class="field"><label class="label" for="snote">Session notes</label><textarea class="input" id="snote" rows="3" placeholder="Sleep, food, how it felt" data-bind="snote">' + esc(d.note) + '</textarea></div></div>');
+    parts.push('<div class="card"><div class="field"><label class="label" for="snote">Session notes</label><textarea class="input" id="snote" rows="3" placeholder="Food, stress, how it felt" data-bind="snote">' + esc(d.note) + '</textarea></div></div>');
     var bar = '<button class="btn primary block" data-act="saveSession">' + (editing ? 'Save changes' : 'Save session') + '</button>';
     if (editing) bar = '<button class="btn danger" data-act="deleteSession" data-confirm="Tap again">Delete</button>' + bar;
     var actions = w ? '<button class="iconbtn" data-act="editWorkout" data-id="' + esc(w.id) + '" aria-label="Edit workout">' + I.edit + '</button>' : '';
@@ -526,7 +595,7 @@
     var rows = s.hist.slice().reverse().map(function (h) {
       var w = wById(h.workoutId);
       return '<button class="hist-row" style="background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left;color:inherit" data-act="editSession" data-id="' + esc(h.sessionId) + '">' +
-        '<span class="hist-date">' + esc(fmtDate(h.date)) + '</span><span class="stack grow"><span class="hist-sets">' + esc(setsString(h.sets)) + '</span><span class="small muted">' + esc(w ? w.name : 'Deleted workout') + ' · est. max ' + fmtW(Math.round(h.e1rm)) + '</span></span>' + I.edit.replace('aria-hidden', 'width="18" height="18" aria-hidden') + '</button>';
+        '<span class="hist-date">' + esc(fmtDate(h.date)) + '</span><span class="stack grow"><span class="hist-sets">' + esc(setsString(h.sets)) + '</span><span class="small muted">' + esc(w ? w.name : 'Deleted workout') + (sleepOf(h.sessionId) !== null ? ' · ' + fmtW(sleepOf(h.sessionId)) + ' h sleep' : '') + ' · est. max ' + fmtW(Math.round(h.e1rm)) + '</span></span>' + I.edit.replace('aria-hidden', 'width="18" height="18" aria-hidden') + '</button>';
     }).join('');
     parts.push('<div class="card"><span class="label">History</span>' + (rows ? '<div class="hist">' + rows + '</div>' : '<p class="small muted">Nothing logged yet.</p>') + '</div>');
     parts.push('<div class="card"><span class="label">Details</span>' +
@@ -553,7 +622,8 @@
       num('increment', 'Weight jump (' + u + ')', 'Default jump. Each exercise can override it.') +
       num('graceSessions', 'Sessions before dropping', 'After a jump, the weight stays put for this many sessions.') +
       num('floorReps', 'Rep floor', 'If the average top-set reps over those sessions is below this, drop back.') +
-      num('windowSessions', 'Rolling window (sessions)', 'How many recent sessions the strength trend and rep target average over.') +
+      num('startReps', 'Reps at a new weight', 'What to aim for the first time at a heavier weight. After that, the target is your most recent reps at that weight.') +
+      num('windowSessions', 'Rolling window (sessions)', 'How many recent sessions the strength trend on each exercise’s chart averages over.') +
       '</div>');
     parts.push('<div class="card"><span class="label">Back-off sets</span><div class="grid2">' +
       num('backoffPct', 'Back-off %', 'Of the top set weight.', Math.round(Number(st.backoffPct) * 100)) +
@@ -651,13 +721,13 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) d.date = todayISO();
     if (view.edit) {
       var s = sessById(d.sessionId);
-      if (s) { s.date = d.date; s.note = d.note; s.entries = entries; }
+      if (s) { s.date = d.date; s.note = d.note; s.sleep = parseSleep(d.sleep); s.entries = entries; }
       persist(); editDraft = null;
       toast('Changes saved.');
       back();
       return;
     }
-    db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, entries: entries });
+    db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, sleep: parseSleep(d.sleep), entries: entries });
     persist(); clearDraft();
     var notes = entries.map(function (e) {
       var ex = exById(e.exerciseId); var s = suggestionFor(ex);
@@ -753,7 +823,7 @@
     editSession: function (b) {
       var s = sessById(b.dataset.id); if (!s) return;
       editDraft = {
-        sessionId: s.id, workoutId: s.workoutId, date: s.date, note: s.note || '',
+        sessionId: s.id, workoutId: s.workoutId, date: s.date, note: s.note || '', sleep: s.sleep === undefined || s.sleep === null ? '' : s.sleep,
         entries: s.entries.map(function (e) { return { slotId: e.slotId || null, exerciseId: e.exerciseId, sets: e.sets.map(function (x) { return { kind: x.kind || 'work', weight: x.weight, reps: x.reps }; }) }; })
       };
       go({ name: 'session', edit: s.id });
@@ -785,6 +855,11 @@
       var ex = createExercise(inp.value); if (!ex) return;
       if (!sl.options.some(function (o) { return o.exerciseId === ex.id; })) sl.options.push({ exerciseId: ex.id, note: '' });
       persist(); render(); toast(ex.name + ' added to your library and this group.');
+    },
+    sleepPt: function (b) {
+      document.querySelectorAll('.sleep-pt.on').forEach(function (n) { n.classList.remove('on'); });
+      b.classList.add('on');
+      var r = document.getElementById('sleepReadout'); if (r) r.textContent = b.getAttribute('data-label');
     },
     pickOpt: function (b) {
       var d = curDraft(); var en = d && d.entries[+b.dataset.e]; var ex = exById(b.dataset.x);
@@ -855,6 +930,7 @@
     },
     date: function (t) { curDraft().date = t.value; saveDraftSoon(); },
     snote: function (t) { curDraft().note = t.value; saveDraftSoon(); },
+    sleep: function (t) { curDraft().sleep = t.value.replace(',', '.').trim(); saveDraftSoon(); },
     itemNote: function (t) {
       var w = wById(t.dataset.w); if (!w) return;
       var sl = slotById(w, t.dataset.sl); if (!sl) return;
@@ -876,7 +952,7 @@
       v = Number(String(v).replace(',', '.'));
       if (!isFinite(v) || v < 0 || String(t.value).trim() === '') return;
       if (k === 'backoffPct') v = Math.min(100, v) / 100;
-      if (['moveUpReps', 'floorReps', 'graceSessions', 'windowSessions', 'backoffSets'].indexOf(k) >= 0) v = Math.round(v);
+      if (['moveUpReps', 'floorReps', 'graceSessions', 'windowSessions', 'backoffSets', 'startReps'].indexOf(k) >= 0) v = Math.round(v);
       if ((k === 'graceSessions' || k === 'windowSessions' || k === 'increment') && v <= 0) return;
       db.settings[k] = v; persistSoon();
     },
@@ -915,6 +991,7 @@
     if (t.dataset.bind === 'exField' && (t.dataset.k === 'equipment' || t.dataset.k === 'increment' || t.dataset.k === 'startWeight')) { persist(); render(); }
   });
   document.addEventListener('keydown', function (e) {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('sleep-pt')) { e.preventDefault(); ACTIONS.sleepPt(e.target); return; }
     if (e.key !== 'Enter' || !e.target.id) return;
     if (e.target.id === 'newex') { e.preventDefault(); ACTIONS.addEx(); }
     var m = /^snew-(\d+)$/.exec(e.target.id);
