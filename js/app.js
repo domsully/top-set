@@ -4,7 +4,7 @@
   var P = window.Progression;
   var KEY = 'topset.v1';
   var DRAFT_KEY = 'topset.draft.v1';
-  var APP_VERSION = '1.3.0';
+  var APP_VERSION = '1.3.1';
 
   // ---------- small utils ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -47,10 +47,26 @@
       version: 1, settings: s,
       exercises: Array.isArray(d.exercises) ? d.exercises : [],
       workouts: Array.isArray(d.workouts) ? d.workouts.map(migrateWorkout) : [],
-      sessions: Array.isArray(d.sessions) ? d.sessions : [],
+      sessions: mergeSameDay(Array.isArray(d.sessions) ? d.sessions : []),
       sleep: migrateSleep(d),
       example: !!d.example, lastExport: d.lastExport || null
     };
+  }
+  // Saving a workout part-way and then again later the same day makes two sessions.
+  // Fold them into one session per workout per day so history reads as one workout.
+  var mergedOnLoad = 0;
+  function mergeSameDay(sessions) {
+    var keep = [], byKey = {};
+    sessions.slice().sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); }).forEach(function (s) {
+      if (!s || !s.workoutId || !s.date) { keep.push(s); return; }
+      var k = s.workoutId + '|' + s.date, first = byKey[k];
+      if (!first) { byKey[k] = s; keep.push(s); return; }
+      first.entries = (first.entries || []).concat(s.entries || []);
+      if (s.note && s.note !== first.note) first.note = first.note ? first.note + ' / ' + s.note : s.note;
+      first.createdAt = Math.max(first.createdAt || 0, s.createdAt || 0);
+      mergedOnLoad++;
+    });
+    return keep;
   }
   // Sleep is one entry per day. v1.2 kept it on sessions; move any of those into the daily log.
   function migrateSleep(d) {
@@ -177,6 +193,7 @@
   // ---------- state ----------
   var db = loadDB();
   if (!db) { db = exampleDB(); persist(); }
+  else if (mergedOnLoad) persist();
   var draft = loadDraft();
   var editDraft = null;
   var view = { name: 'train' };
@@ -484,6 +501,7 @@
       var e = bySlot[sl.id];
       if (!e) { var x = defaultPick(w, sl); e = { slotId: sl.id, exerciseId: x, sets: defaultSets(exById(x), n) }; }
       else if (ids.indexOf(e.exerciseId) < 0) { e.exerciseId = defaultPick(w, sl); e.sets = defaultSets(exById(e.exerciseId), n); }
+      if (e.stash) Object.keys(e.stash).forEach(function (id) { if (ids.indexOf(id) < 0) delete e.stash[id]; });
       out.push(e);
     });
     d.entries.forEach(function (e) { if (!e.slotId && exById(e.exerciseId)) out.push(e); });
@@ -516,10 +534,13 @@
       var lastW = last ? wById(last.workoutId) : null;
       var picker = '';
       if (!editing && sl && sl.options.length > 1) {
+        var others = sl.options.filter(function (o) { return o.exerciseId !== ex.id && hasReps(en.stash && en.stash[o.exerciseId]); }).length;
         picker = '<div class="picker" role="group" aria-label="Pick the exercise for ' + esc(sl.name || 'this group') + '">' + sl.options.map(function (o) {
           var oe = exById(o.exerciseId); if (!oe) return '';
-          return '<button class="pick" aria-pressed="' + (oe.id === ex.id) + '" data-act="pickOpt" data-e="' + ei + '" data-x="' + esc(oe.id) + '">' + esc(oe.name) + '</button>';
-        }).join('') + '</div>';
+          var filled = oe.id === ex.id ? hasReps(en.sets) : hasReps(en.stash && en.stash[oe.id]);
+          return '<button class="pick' + (filled ? ' filled' : '') + '" aria-pressed="' + (oe.id === ex.id) + '" data-act="pickOpt" data-e="' + ei + '" data-x="' + esc(oe.id) + '"' +
+            (filled ? ' aria-label="' + esc(oe.name) + ', sets entered"' : '') + '>' + esc(oe.name) + (filled ? '<span class="pick-dot" aria-hidden="true">✓</span>' : '') + '</button>';
+        }).join('') + '</div>' + (others ? '<p class="small muted">✓ = sets entered. Every exercise with a ✓ gets saved.</p>' : '');
       }
       var setsHTML = en.sets.map(function (st, si) {
         var bo = 0; for (var q = 0; q <= si; q++) if (en.sets[q].kind !== 'top') bo++;
@@ -723,8 +744,23 @@
     go({ name: 'session' });
   }
 
+  function hasReps(sets) { return (sets || []).some(function (x) { return Number(x.reps) > 0; }); }
+  // Every exercise in a group that has reps entered gets saved, not just the one showing.
+  function expandEntries(d) {
+    var out = [];
+    d.entries.forEach(function (e) {
+      out.push({ slotId: e.slotId, exerciseId: e.exerciseId, sets: e.sets });
+      var stash = e.stash || {};
+      var w = wById(d.workoutId), sl = slotById(w, e.slotId);
+      var order = sl ? sl.options.map(function (o) { return o.exerciseId; }) : [];
+      Object.keys(stash).sort(function (a, b) { return order.indexOf(a) - order.indexOf(b); }).forEach(function (id) {
+        if (id !== e.exerciseId && exById(id) && hasReps(stash[id])) out.push({ slotId: e.slotId, exerciseId: id, sets: stash[id] });
+      });
+    });
+    return out;
+  }
   function cleanEntries(d) {
-    return d.entries.map(function (e) {
+    return expandEntries(d).map(function (e) {
       return {
         slotId: e.slotId || null,
         exerciseId: e.exerciseId,
@@ -757,7 +793,15 @@
       back();
       return;
     }
-    db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, entries: entries });
+    var same = db.sessions.filter(function (x) { return x.workoutId === d.workoutId && x.date === d.date; })[0];
+    if (same) {
+      // Already saved this workout today: add to that session instead of starting a second one.
+      same.entries = same.entries.concat(entries);
+      if (d.note && d.note !== same.note) same.note = same.note ? same.note + ' / ' + d.note : d.note;
+      same.createdAt = Date.now();
+    } else {
+      db.sessions.push({ id: uid(), date: d.date, createdAt: Date.now(), workoutId: d.workoutId, note: d.note, entries: entries });
+    }
     applyDraftSleep(d);
     persist(); clearDraft();
     var notes = entries.map(function (e) {
@@ -903,7 +947,12 @@
     pickOpt: function (b) {
       var d = curDraft(); var en = d && d.entries[+b.dataset.e]; var ex = exById(b.dataset.x);
       if (!en || !ex || en.exerciseId === ex.id) return;
-      en.exerciseId = ex.id; en.sets = defaultSets(ex, backoffCount());
+      // Keep what you typed for the exercise you're leaving, and bring back anything typed for the one you pick.
+      en.stash = en.stash || {};
+      en.stash[en.exerciseId] = en.sets;
+      en.exerciseId = ex.id;
+      en.sets = en.stash[ex.id] || defaultSets(ex, backoffCount());
+      delete en.stash[ex.id];
       saveDraftSoon(); render();
     },
     deleteWorkout: function () {

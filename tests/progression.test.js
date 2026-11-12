@@ -141,3 +141,12 @@ test('start reps setting is configurable', () => {
   const h = P.historyFor(mk('bench', [['2026-10-01', 185, 9]]), 'bench');
   assert.equal(P.suggest(h, { startReps: 5 }).targetReps, 5);
 });
+
+test('an exercise saved twice on one day counts once (last save wins)', () => {
+  const d = mk('bench', [['2026-10-01', 185, 9], ['2026-10-08', 190, 3], ['2026-10-08', 190, 3], ['2026-10-08', 190, 3]]);
+  const h = P.historyFor(d, 'bench');
+  assert.equal(h.length, 2);
+  const r = P.suggest(h, {});
+  assert.equal(r.status, 'grace'); // still 1 of 3 sessions at 190, not a drop
+  assert.equal(r.runLength, 1);
+});

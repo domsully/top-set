@@ -108,7 +108,14 @@
       if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
       return a.order - b.order;
     });
-    return out;
+    // One data point per day: if an exercise was saved more than once on the same day,
+    // only the last save counts, so split or repeated saves can't double-count a session.
+    var daily = [];
+    out.forEach(function (h) {
+      if (daily.length && daily[daily.length - 1].date === h.date) daily[daily.length - 1] = h;
+      else daily.push(h);
+    });
+    return daily;
   }
 
   function mean(arr) {

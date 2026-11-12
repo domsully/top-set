@@ -229,6 +229,8 @@ textarea.input { resize: vertical; min-height: 64px; line-height: 1.4; }
   background: var(--surface-2); font: 600 14px/1.2 var(--font-body); text-align: left;
 }
 .pick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.pick.filled:not([aria-pressed="true"]) { border-color: var(--accent); color: var(--accent); }
+.pick-dot { margin-left: 6px; }
 .slotnum { width: 28px; flex: none; font: 700 22px/1 var(--font-display); color: var(--accent); text-align: center; }
 .ordbtn { width: 36px; height: 44px; flex: none; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); padding: 0; display: grid; place-items: center; }
 .ordbtn:disabled, .item .ord button:disabled { opacity: .35; cursor: default; }
