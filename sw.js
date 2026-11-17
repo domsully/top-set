@@ -1,5 +1,5 @@
 /* Offline cache for Top Set. Bump VERSION when you change any app file so phones pick up the update. */
-const VERSION = 'topset-v1.3.1';
+const VERSION = 'topset-v1.4.0';
 const CORE = [
   './',
   './index.html',

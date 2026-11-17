@@ -4,7 +4,7 @@
   var P = window.Progression;
   var KEY = 'topset.v1';
   var DRAFT_KEY = 'topset.draft.v1';
-  var APP_VERSION = '1.3.1';
+  var APP_VERSION = '1.4.0';
 
   // ---------- small utils ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -312,13 +312,15 @@
     var big = '<div class="big num">' + fmtW(s.weight) + '<span class="unit">' + u + '</span>' +
       (target ? '<span class="x">×</span>' + fmtW(target) : '') + '</div>';
     var sub = target ? '<div class="small"><span class="reps-meta">' + esc(repsLine(s)) + '</span><span class="muted"> · move up at ' + esc(db.settings.moveUpReps) + '</span></div>' : '';
-    var bo = s.backoff && s.backoff.sets > 0 ? '<span class="chip">Back-off ' + s.backoff.sets + ' × ' + fmtW(s.backoff.weight) + '</span>' : '';
+    var plan = defaultSets(ex, backoffCount()).filter(function (x) { return x.kind !== 'top'; }).map(function (x) { return x.weight; });
+    var same = plan.every(function (w) { return w === plan[0]; });
+    var bo = plan.length ? '<span class="chip">' + (plan.length === 1 ? 'Back-off' : 'Back-offs') + ' ' + (same ? plan.length + ' × ' + fmtW(plan[0]) : plan.map(fmtW).join(' · ')) + '</span>' : '';
     return '<div class="suggest">' + big + (ex.equipment === 'barbell' ? plateSVG(Number(s.weight)) : ex.equipment === 'smith' ? plateSVG(Number(s.weight), 0) : '') + '</div>' + sub +
       '<p class="small muted">' + esc(s.reason) + '</p>' + (bo ? '<div class="chips">' + bo + '</div>' : '');
   }
 
   function setsString(sets) {
-    return sets.map(function (s) { return fmtW(s.weight) + '×' + s.reps; }).join(' · ');
+    return sets.map(function (s) { return fmtW(s.weight) + '×' + fmtW(s.reps); }).join(' · ');
   }
 
   function sparkSVG(hist) {
@@ -485,10 +487,33 @@
       }).filter(Boolean)
     };
   }
+  // The back-off sets from a logged session (everything except its top set).
+  function backoffsOf(h) {
+    if (!h) return [];
+    var sets = h.sets.slice();
+    var marked = sets.some(function (x) { return x.kind === 'top'; });
+    if (marked) return sets.filter(function (x) { return x.kind !== 'top'; });
+    var i = sets.findIndex(function (x) { return x.weight === h.top.weight && x.reps === h.top.reps; });
+    if (i >= 0) sets.splice(i, 1);
+    return sets;
+  }
+  // New sets for an exercise: the suggested top set, then as many back-off sets as you did
+  // last time (at least the default), each showing last time's reps as a hint.
   function defaultSets(ex, n) {
     var s = suggestionFor(ex);
+    var last = s.hist.length ? s.hist[s.hist.length - 1] : null;
+    var lastBo = backoffsOf(last);
+    var sameTop = last && s.weight === last.top.weight;
     var sets = [{ kind: 'top', weight: s.weight === null || s.weight === undefined ? '' : s.weight, reps: '' }];
-    for (var i = 0; i < n; i++) sets.push({ kind: 'backoff', weight: s.backoff ? s.backoff.weight : '', reps: '' });
+    var count = Math.max(n, lastBo.length);
+    for (var i = 0; i < count; i++) {
+      var prev = lastBo[i];
+      // Same top weight as last time: repeat last time's back-off weights. New top weight: back-offs follow it.
+      // (Older straight sets logged at the top weight don't count as back-off weights.)
+      var reuse = prev && (!s.backoff || (sameTop && prev.weight < last.top.weight));
+      var w = reuse ? prev.weight : (s.backoff ? s.backoff.weight : '');
+      sets.push({ kind: 'backoff', weight: w, reps: '', prev: prev ? prev.reps : '' });
+    }
     return sets;
   }
   function reconcileDraft(d, w) {
@@ -545,7 +570,7 @@
       var setsHTML = en.sets.map(function (st, si) {
         var bo = 0; for (var q = 0; q <= si; q++) if (en.sets[q].kind !== 'top') bo++;
         var tag = st.kind === 'top' ? '<span class="tag top">Top</span>' : '<span class="tag">B' + bo + '</span>';
-        var ph = st.kind === 'top' && s.targetReps && !editing ? String(s.targetReps) : '';
+        var ph = editing ? '' : st.kind === 'top' ? (s.targetReps ? String(fmtW(s.targetReps)) : '') : (st.prev !== undefined && st.prev !== '' ? String(fmtW(st.prev)) : '');
         return '<div class="set">' + tag +
           '<input class="input" id="w-' + ei + '-' + si + '" inputmode="decimal" enterkeyhint="next" aria-label="' + esc(ex.name) + ' set ' + (si + 1) + ' weight" value="' + esc(st.weight) + '" data-bind="set" data-e="' + ei + '" data-s="' + si + '" data-f="weight">' +
           '<span class="times">×</span>' +
@@ -875,7 +900,9 @@
       var top = en.sets.filter(function (x) { return x.kind === 'top'; })[0];
       var inc = Number(ex.increment) > 0 ? Number(ex.increment) : Number(db.settings.increment) || 5;
       var wgt = lastBo ? lastBo.weight : (top && top.weight !== '' ? P.roundTo(Number(top.weight) * Number(db.settings.backoffPct || 0.7), inc) : (s.backoff ? s.backoff.weight : ''));
-      en.sets.push({ kind: 'backoff', weight: wgt, reps: '' });
+      var lastH = s.hist.filter(function (h) { return h.sessionId !== d.sessionId; }).pop();
+      var prevBo = backoffsOf(lastH)[en.sets.filter(function (x) { return x.kind !== 'top'; }).length];
+      en.sets.push({ kind: 'backoff', weight: prevBo && !lastBo ? prevBo.weight : wgt, reps: '', prev: prevBo ? prevBo.reps : '' });
       saveDraftSoon(); render();
     },
     addTop: function (b) {
